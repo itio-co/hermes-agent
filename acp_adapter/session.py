@@ -151,6 +151,8 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    # Last ``_meta.hermes.backgroundTasks`` sent, so the count goes out only when it changes.
+    background_tasks: int = 0
 
 
 class SessionManager:
@@ -193,6 +195,11 @@ class SessionManager:
             with self._lock:
                 state = self._sessions.get(session_id)  # a concurrent restore may have installed it
             return state if state is not None else self._restore(session_id)
+
+    def peek_session(self, session_id: str) -> Optional[SessionState]:
+        """The session if it is open in memory; never restores from the DB."""
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""

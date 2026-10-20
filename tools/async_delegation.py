@@ -696,6 +696,14 @@ def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", 
     return bool(_session_records(_LIVE_STATES, session_key, origin_ui_session_id, parent_session_id))
 
 
+def live_task_count_for_session(session_key: str) -> int:
+    """Running child subagents a session owns, counted like ``active_task_count`` (ACP's background badge)."""
+    return sum(
+        len(r.get("task_indexes") or r["goals"])
+        if r.get("is_batch") and isinstance(r.get("goals"), (list, tuple)) and r["goals"] else 1
+        for r in _session_records(_LIVE_STATES, session_key, "", ""))
+
+
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 

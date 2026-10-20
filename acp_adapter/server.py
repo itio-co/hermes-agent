@@ -49,6 +49,19 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 _LIST_SESSIONS_PAGE_SIZE = 50
 
 
+class _Notification(str):
+    """A queued prompt that is a background completion (async ``delegate_task`` result). It rides
+    ``queued_prompts`` like any prompt; the drain marks its user chunk and settles the ledger claim."""
+
+    evt: dict
+    claim: str
+    label: str
+
+    def meta(self) -> dict:
+        return {"hermes": {"notification": {
+            "kind": "async_delegation", "delegationId": self.evt.get("delegation_id"), "title": self.label}}}
+
+
 def _flatten_history_text(value: Any) -> str:
     """Persisted content/reasoning (str, or list of ``{"text"}`` / ``{"type": "text", "content"}``
     parts) -> one stripped string; whitespace-only collapses to ``""`` ("nothing to emit")."""
@@ -255,6 +268,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._completion_thread: Optional[threading.Thread] = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -278,6 +292,68 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         loop = asyncio.get_running_loop()
         loop.call_soon(asyncio.create_task, make_coro())
+
+    # ---- Background completions ---------------------------------------------
+    # Top-level delegate_task always runs detached; its result lands on the process-wide
+    # completion_queue. The CLI/TUI/gateway drain it into a new turn; over ACP this does.
+
+    def _ensure_completion_consumer(self) -> None:
+        """Start the one queue consumer for this process, on the first session open."""
+        if self._completion_thread is not None:
+            return
+        self._completion_thread = threading.Thread(
+            target=self._completion_loop, args=(asyncio.get_running_loop(),), name="acp-completions", daemon=True)
+        self._completion_thread.start()
+
+    def _completion_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        from tools import async_delegation
+        from tools.process_registry import process_registry
+
+        process_registry.restore_completions()  # results finished while no ACP process was up
+        queue = process_registry.completion_queue
+        while not loop.is_closed():
+            async_delegation.maybe_sweep_orphaned_completions(queue)
+            try:
+                evt = queue.get(timeout=0.5)
+            except Exception:
+                continue
+            try:
+                self._route_completion(evt, loop)
+            except Exception:
+                logger.warning("ACP: could not route a background completion", exc_info=True)
+
+    def _route_completion(self, evt: dict, loop: asyncio.AbstractEventLoop) -> None:
+        """Queue a delegation result as the next turn of the ACP session that dispatched it."""
+        from tools import async_delegation
+        from tools.process_registry_notifications import async_delegation_display_text, format_process_notification
+
+        if evt.get("type") != "async_delegation":
+            return  # kido: process notifications aren't routed over ACP yet
+        # session_key is the ACP session id (``_run_agent_turn`` binds it).
+        state = self.session_manager.peek_session(str(evt.get("session_key") or ""))
+        if state is None or not (text := format_process_notification(evt)):
+            async_delegation.return_completion_offer(evt)  # stays pending; a later sweep offers it again
+            return
+        claim = async_delegation.claim_event_delivery(evt, "acp")
+        if claim is None:
+            return  # another consumer delivers it
+        note = _Notification(text)
+        note.evt, note.claim, note.label = evt, claim, async_delegation_display_text(evt)
+        with state.runtime_lock:
+            state.queued_prompts.append(note)
+        asyncio.run_coroutine_threadsafe(self._drain_queued_prompts(state, state.session_id, self._conn), loop)
+
+    async def _send_background_tasks(self, state: SessionState) -> None:
+        """``_meta.hermes.backgroundTasks``: running subagents this session dispatched, sent on change."""
+        from tools.async_delegation import live_task_count_for_session
+
+        count = live_task_count_for_session(state.session_id)
+        if count == state.background_tasks or not self._conn:
+            return
+        state.background_tasks = count
+        update = SessionInfoUpdate(session_update="session_info_update", field_meta={"hermes": {"backgroundTasks": count}})
+        await self._send(state.session_id, update, fail_msg="Could not send ACP background count for %s",
+                         level=logging.DEBUG)
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Edit-approval policy as ACP modes. Zed renders ``config_options`` in the model
@@ -600,6 +676,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     f"{replay_verb} will still succeed, partial transcript may be missing",
                     state.session_id, exc_info=True,
                 )
+        self._ensure_completion_consumer()
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
         return {
@@ -988,6 +1065,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     state.message_ids.close()
                 await conn.session_update(session_id, update)
 
+            await self._send_background_tasks(state)  # before the response: a client routes by the live turn
         finally:
             # Go idle before draining so recursive prompt() calls can acquire the session.
             with state.runtime_lock:
@@ -1006,16 +1084,30 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
-        """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and
-        from the slash path after a state-mutating command releases ``command_op``."""
+        """Run queued prompts while the session is idle. Reached from ``_finish_turn``, from the
+        slash path after a state-mutating command releases ``command_op``, and from the completion
+        consumer, whose ``_Notification`` items settle their ledger claim once their turn ran."""
+        from tools.async_delegation import complete_event_delivery, release_event_delivery
+
         while True:
             with state.runtime_lock:
                 if state.is_running or state.command_op or not state.queued_prompts:
                     return
                 next_prompt = state.queued_prompts.pop(0)
-            if conn:
-                await conn.session_update(session_id, acp.update_user_message_text(next_prompt))
-            await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
+            note = next_prompt if isinstance(next_prompt, _Notification) else None
+            try:
+                if conn:
+                    update = acp.update_user_message_text(next_prompt)
+                    if note is not None:
+                        update.field_meta = note.meta()
+                    await conn.session_update(session_id, update)
+                await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
+            except BaseException:
+                if note is not None:
+                    release_event_delivery(note.evt, note.claim)
+                raise
+            if note is not None:
+                complete_event_delivery(note.evt, note.claim)
 
     # ---- Session settings (ACP protocol methods) -----------------------------
 
