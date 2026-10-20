@@ -694,7 +694,9 @@ def _build_tool_complete_content(
     tool_name: str, result: Optional[str], *, function_args: Optional[Args] = None, snapshot: Any = None
 ) -> list[Any]:
     """Build structured ACP completion content, falling back to plain text."""
-    if tool_name == "skill_manage":
+    # an edit's diff rides on its completion: the start carries it only when Hermes's own edit policy
+    # auto-approved it, and a client answering the permission request itself would never see it
+    if tool_name in {"skill_manage", "patch", "write_file"}:
         try:
             from agent.display import extract_edit_diff
 
