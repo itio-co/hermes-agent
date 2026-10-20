@@ -187,6 +187,14 @@ class TestBuildToolComplete:
         assert "line 0199" in text and "chars total, truncated" not in text
         assert text.endswith("- **exit_code:** 0")
 
+    def test_build_tool_complete_for_patch_carries_the_diff(self):
+        """The diff rides on the completion, whoever answered the permission request."""
+        diff = "--- a/notes.md\n+++ b/notes.md\n@@ -1,2 +1,2 @@\n keep\n-old line\n+new line\n"
+        result = build_tool_complete("tc-p", "patch", json.dumps({"success": True, "diff": diff}), {"path": "notes.md"})
+        assert result.status == "completed"
+        item = result.content[0]
+        assert (item.type, item.path, item.old_text, item.new_text) == ("diff", "notes.md", "keep\nold line", "keep\nnew line")
+
 
 
 
