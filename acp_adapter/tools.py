@@ -617,7 +617,25 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str], *, 
     return _truncate_text("\n".join(lines), limit=7000)
 
 
+# Command output is what an ACP client shows under the call; the generic formatter's 500-char
+# field cap cuts an ordinary `git status`. The agent itself always gets the full result.
+_TERMINAL_OUTPUT_LIMIT = 50_000
+
+
+@_structured(text_fallback=True)
+def _format_terminal_result(tool_name: str, data: Args, args: Args) -> Optional[str]:
+    """The generic shape (``terminal result`` / ``- **output:** …`` / other fields) with the output
+    kept up to ``_TERMINAL_OUTPUT_LIMIT`` instead of the generic per-field cap."""
+    output = data.get("output")
+    if not isinstance(output, str) or not output:
+        return _format_generic_structured_result(tool_name, json.dumps(data))
+    rest = {k: v for k, v in data.items() if k != "output"}
+    head, _, tail = (_format_generic_structured_result(tool_name, json.dumps(rest)) or f"{tool_name} result").partition("\n")
+    return "\n".join([head, f"- **output:** {_truncate_text(output, limit=_TERMINAL_OUTPUT_LIMIT)}", *([tail] if tail else [])])
+
+
 _COMPLETION_FORMATTERS: dict[str, _Formatter] = {
+    "terminal": _format_terminal_result,
     "todo": _format_todo_result,
     "read_file": _format_read_file_result,
     "write_file": _format_edit_result,
