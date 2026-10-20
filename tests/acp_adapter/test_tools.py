@@ -1,5 +1,6 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import json
 
 import pytest
 
@@ -176,6 +177,15 @@ class TestBuildToolComplete:
         assert isinstance(content_item, ContentToolCallContent)
         assert "total 42" in content_item.content.text
         assert result.raw_output is None
+
+    def test_build_tool_complete_for_terminal_keeps_long_output(self):
+        """Command output isn't cut at the generic 500-char field cap."""
+        out = "\n".join(f"line {i:04d} " + "x" * 40 for i in range(200))
+        result = build_tool_complete("tc-3", "terminal", json.dumps({"output": out, "exit_code": 0, "error": None}))
+        text = result.content[0].content.text
+        assert text.startswith("terminal result\n- **output:** line 0000")
+        assert "line 0199" in text and "chars total, truncated" not in text
+        assert text.endswith("- **exit_code:** 0")
 
 
 
