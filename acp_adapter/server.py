@@ -298,8 +298,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     # completion_queue. The CLI/TUI/gateway drain it into a new turn; over ACP this does.
 
     def _ensure_completion_consumer(self) -> None:
-        """Start the one queue consumer for this process, on the first session open."""
-        if self._completion_thread is not None:
+        """Start the one queue consumer for this process, on its first prompt."""
+        if getattr(self, "_completion_thread", None) is not None:
             return
         self._completion_thread = threading.Thread(
             target=self._completion_loop, args=(asyncio.get_running_loop(),), name="acp-completions", daemon=True)
@@ -676,7 +676,6 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     f"{replay_verb} will still succeed, partial transcript may be missing",
                     state.session_id, exc_info=True,
                 )
-        self._ensure_completion_consumer()
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
         return {
@@ -894,6 +893,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def prompt(self, prompt: list[PromptBlock], session_id: str, **kwargs: Any) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
+        # Only a process that runs turns takes results: a client's one-shot load/list process
+        # would claim them and exit before their turn ran.
+        self._ensure_completion_consumer()
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
