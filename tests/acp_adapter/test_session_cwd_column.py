@@ -105,3 +105,48 @@ def test_legacy_rows_get_their_cwd_column_backfilled_when_the_manager_opens_the_
     assert db.get_session("legacy")["cwd"] == "/work/hs-wwd"
     assert db.get_session("cli")["cwd"] in (None, ""), "only ACP rows are repaired"
     db.close()
+
+
+def test_a_turn_cut_off_before_it_ends_still_leaves_the_cwd(tmp_path):
+    """The client process dies mid first turn, so ``_persist`` never runs. The cwd
+    recorded at turn start must survive into the row, ``session/list`` and a restore —
+    not the ``"."`` default a client would then send back on ``session/load``."""
+    db = SessionDB(tmp_path / "state.db")
+    workspace = tmp_path / "orbit"
+    workspace.mkdir()
+    manager = _manager(db)
+
+    state = manager.create_session(cwd=str(workspace))
+    manager.persist_cwd(state)  # turn start
+    # The agent's own lazy create and incremental flush, which know nothing of the workspace.
+    db.create_session(session_id=state.session_id, source="acp", model="fixture",
+                      model_config={"reasoning_config": {"enabled": True}})
+    db.replace_messages(state.session_id, [{"role": "user", "content": "hello"}])
+
+    row = db.get_session(state.session_id)
+    assert row["cwd"] == state.cwd
+    assert json.loads(row["model_config"])["cwd"] == state.cwd
+
+    fresh = _manager(db)  # the restarted process
+    listed = {s["session_id"]: s for s in fresh.list_sessions()}
+    assert listed[state.session_id]["cwd"] == state.cwd
+    assert fresh.get_session(state.session_id).cwd == state.cwd
+    db.close()
+
+
+def test_list_and_restore_fall_back_to_the_cwd_column(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(session_id="s", source="acp", model="m", model_config={"max_tokens": None}, cwd="/work/orbit")
+    db.replace_messages("s", [{"role": "user", "content": "hello"}])
+    manager = _manager(db)
+
+    assert {s["session_id"]: s["cwd"] for s in manager.list_sessions()}["s"] == "/work/orbit"
+    assert manager.get_session("s").cwd == "/work/orbit"
+    db.close()
+
+
+def test_a_probe_without_a_prompt_stays_ephemeral(tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    state = _manager(db).create_session(cwd=str(tmp_path))
+    assert db.get_session(state.session_id) is None
+    db.close()
