@@ -117,6 +117,12 @@ def _parse_model_config(mc: Any) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
+def _row_cwd(row: dict, meta: dict | None = None) -> str:
+    """A persisted session's cwd: ``model_config.cwd``, else the ``cwd`` column, else ``"."``."""
+    meta = _parse_model_config(row.get("model_config")) if meta is None else meta
+    return meta.get("cwd") or row.get("cwd") or "."
+
+
 def _session_info(sid: str, cwd: str, model: Any, history_len: int, title: Any, preview: Any,
                   updated_at: Any) -> dict[str, Any]:
     return {"session_id": sid, "cwd": cwd, "model": model, "history_len": history_len,
@@ -232,7 +238,7 @@ class SessionManager:
         # Then persisted sessions not currently in memory.
         for sid, row in persisted_rows.items():
             message_count = int(row.get("message_count") or 0)
-            session_cwd = _parse_model_config(row.get("model_config")).get("cwd", ".")
+            session_cwd = _row_cwd(row)
             if sid in seen_ids or message_count <= 0 or not _matches(session_cwd):
                 continue
             results.append(_session_info(
@@ -265,6 +271,27 @@ class SessionManager:
         # previous workspace cannot overwrite a newer claim (A -> B -> A).
         self._schedule_git_metadata(state, self._claim_cwd_generation(state))
         return state
+
+    def persist_cwd(self, state: SessionState) -> None:
+        """Record the session's cwd as its turn starts, before the agent runs.
+
+        ``_persist`` writes the cwd only at turn end. A first turn killed mid-way (the
+        client process restarting) left a row with no cwd at all; ``session/list`` then
+        reported ``"."``, a client continuing the chat sent that back on ``session/load``,
+        and ``update_cwd`` made it permanent. A prompted session is real, so the row is
+        minted here; ``session/new`` alone stays an ephemeral probe. The upsert never
+        overwrites an earlier writer, and the agent's own later create keeps this one.
+        """
+        db = self._get_db()
+        if db is None or not state.cwd:
+            return
+        try:
+            db.ensure_session(state.session_id, source="acp", model=str(state.model) if state.model else None,
+                              model_config={"cwd": state.cwd}, cwd=state.cwd)
+        except Exception:
+            logger.debug("Failed to record ACP session cwd for %s", state.session_id, exc_info=True)
+            return
+        self._schedule_git_metadata(state, self._claim_cwd_generation(state))
 
     def save_session(self, session_id: str) -> None:
         """Persist a session; called by the server after prompt completion,
@@ -467,7 +494,7 @@ class SessionManager:
                 logger.debug("Failed to reopen ACP session %s", session_id, exc_info=True)
 
         meta = _parse_model_config(row.get("model_config"))
-        cwd, model = meta.get("cwd", "."), row.get("model") or None
+        cwd, model = _row_cwd(row, meta), row.get("model") or None
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.

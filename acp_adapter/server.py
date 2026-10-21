@@ -847,6 +847,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return PromptResponse(stop_reason="end_turn")
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
+        # Before the agent runs: a turn cut off mid-way must not leave the row without its cwd.
+        await asyncio.to_thread(self.session_manager.persist_cwd, state)
         conn, loop = self._conn, asyncio.get_running_loop()
         if state.cancel_event:
             state.cancel_event.clear()
