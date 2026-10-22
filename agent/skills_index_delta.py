@@ -105,7 +105,7 @@ def stage_skills_index_note(agent: Any, prompt: Any, conversation_history: Any) 
     embedder-supplied prompt), and announcing the whole catalog there would only add noise. MoA and
     codex_app_server turns never stamp the ``api_content`` sidecar, so the note could not be read
     back from the transcript; those modes skip it, like the surface-switch note."""
-    if getattr(agent, "provider", None) == "moa" or getattr(agent, "api_mode", None) == "codex_app_server":
+    if getattr(agent, "provider", None) == "moa" or getattr(agent, "api_mode", None) in {"codex_app_server", "agy"}:
         return False
     stored = index_entries(prompt)
     if not stored:

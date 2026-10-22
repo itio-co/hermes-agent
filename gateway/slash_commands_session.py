@@ -722,6 +722,8 @@ class GatewaySessionCommandsMixin:
             # Context lives in the server-side thread of the LIVE cached agent; a temporary agent
             # has none (and finally-eviction would destroy the real context).
             return await self._compress_codex_app_server_session(session_key, session_entry.session_id)
+        if str(runtime_kwargs.get("api_mode") or "").lower() == "agy":
+            return "agy keeps its own conversation context; there is nothing for Hermes to compress."
         if not runtime_kwargs.get("api_key"):
             return t("gateway.compress.no_provider")
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves

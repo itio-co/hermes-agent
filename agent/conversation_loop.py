@@ -1552,6 +1552,23 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _agy_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
+    """agy's result for this turn, or None when its failure (rate limit / billing) activated a configured
+    fallback provider and the generic loop retries the same user turn — the codex app-server contract."""
+    agy_result = agent._run_agy_turn(
+        user_message=s.user_message, original_user_message=s.original_user_message, messages=s.messages,
+        effective_task_id=s.effective_task_id, should_review_memory=s._should_review_memory,
+    )
+    from agent.turn_recovery import activate_codex_app_server_fallback
+    if not activate_codex_app_server_fallback(agent, agy_result):
+        return agy_result
+    from agent.agy_runtime import retire_agy_session
+    retire_agy_session(agent)  # the fallback runs on another provider; a later switch back resumes agy
+    s.api_call_count = int(agy_result.get("api_calls") or 0)
+    s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    return None
+
+
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1650,11 +1667,8 @@ def _run_conversation_turn(
     if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
         return codex_result
     # model.provider: agy hands the whole turn to the Antigravity CLI (agent/agy_runtime.py).
-    if agent.api_mode == "agy":
-        return agent._run_agy_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message, messages=s.messages,
-            effective_task_id=s.effective_task_id, should_review_memory=s._should_review_memory,
-        )
+    if agent.api_mode == "agy" and (agy_result := _agy_turn(agent, s)) is not None:
+        return agy_result
 
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
