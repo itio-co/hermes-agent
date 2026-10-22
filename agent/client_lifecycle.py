@@ -267,9 +267,10 @@ class ClientLifecycleMixin:
                 logger.debug("Abandoned-worker drain: %s client abort failed", label, exc_info=True)
         # Codex app-server session watches a private interrupt event.
         try:
-            request_interrupt = getattr(getattr(self, "_codex_session", None), "request_interrupt", None)
-            if callable(request_interrupt):
-                request_interrupt()
+            for session_attr in ("_codex_session", "_agy_session"):
+                request_interrupt = getattr(getattr(self, session_attr, None), "request_interrupt", None)
+                if callable(request_interrupt):
+                    request_interrupt()
         except Exception:
             logger.debug("Abandoned-worker drain: codex interrupt failed", exc_info=True)
         # Inline (cron-style) request abort hook, when registered.

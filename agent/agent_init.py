@@ -381,7 +381,7 @@ class CompressionSettings(SimpleNamespace):
 
 _EXPLICIT_API_MODES = {
     "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
+    "codex_app_server", "agy",
 }
 
 
