@@ -1197,7 +1197,7 @@ def build_turn_context(
                 agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
                 preflight_compressed=compaction.compressed,
             )
-        elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+        elif not moa_active and getattr(agent, "api_mode", None) not in {"codex_app_server", "agy"}:
             _stamp_api_content_sidecar(
                 agent, messages, current_turn_user_idx, ext_prefetch_cache,
                 plugin_user_context, preflight_compressed=compaction.compressed,

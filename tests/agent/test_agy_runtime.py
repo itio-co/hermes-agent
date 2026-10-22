@@ -23,6 +23,9 @@ log = os.environ["FAKE_AGY_LOG"]
 with open(log, "a") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "pid": os.getpid()}) + "\n")
 conv = sys.argv[sys.argv.index("--conversation") + 1] if "--conversation" in sys.argv else "conv-%d" % os.getpid()
+if conv == "gone":  # agy 1.4.5: an unknown id starts a new conversation with a stderr warning
+    sys.stderr.write('warning: conversation "gone" not found\n'); sys.stderr.flush()
+    conv = "conv-%d" % os.getpid()
 def out(obj):
     sys.stdout.write(json.dumps(obj) + "\n"); sys.stdout.flush()
 def step(i, **kw):
@@ -39,6 +42,8 @@ for line in sys.stdin:
     if "DIE" in text:
         sys.exit(3)
     if "SLEEP" in text:
+        time.sleep(30)
+    if "HANG" in text:
         time.sleep(30)
     if "TOOL" in text:
         step(1, state="ACTIVE", step_type="tool", tool_name="read_file",
@@ -268,3 +273,83 @@ def test_provider_agy_resolves_to_the_agy_api_mode():
     from hermes_cli.runtime_provider import resolve_runtime_provider
     runtime = resolve_runtime_provider(requested="agy")
     assert runtime["provider"] == "agy" and runtime["api_mode"] == "agy"
+
+
+def test_tool_call_ids_differ_between_turns(fake_agy):
+    session = _session(fake_agy)
+    try:
+        first = session.run_turn("TOOL")
+        second = session.run_turn("TOOL")
+    finally:
+        session.close()
+    assert first.projected_messages[0]["tool_calls"][0]["id"] != second.projected_messages[0]["tool_calls"][0]["id"]
+
+
+def test_silent_agy_is_stopped_after_the_idle_timeout(fake_agy):
+    session = _session(fake_agy, idle_timeout=1)
+    try:
+        turn = session.run_turn("HANG")
+    finally:
+        session.close()
+    assert turn.should_retire and "sent nothing" in turn.error
+
+
+def test_fresh_input_goes_only_with_a_new_conversation(fake_agy):
+    session = _session(fake_agy)
+    try:
+        session.run_turn("one", fresh_input="SEED one")
+        session.run_turn("two", fresh_input="SEED two")
+    finally:
+        session.close()
+    assert fake_agy.records("input") == ["SEED one", "two"]
+
+
+def test_lost_resume_reseeds_and_tells_the_user(fake_agy, monkeypatch):
+    agent, db = _agent(fake_agy, monkeypatch, stored="gone")
+    try:
+        result = _run(agent, "hello")
+    finally:
+        agy_runtime.close_agy_session(agent)
+    assert fake_agy.records("input")[0].startswith("<hermes_context>")
+    assert "could not resume" in agent._emit_diagnostic_status.call_args[0][0]
+    assert db.patch_session_model_config.call_args[0][1]["agy_conversation_id"].startswith("conv-")
+    assert result["completed"]
+
+
+def test_bypass_toggle_respawns_on_the_same_conversation(fake_agy, monkeypatch):
+    from tools import approval
+    agent, _db = _agent(fake_agy, monkeypatch)
+    bypass = {"on": False}
+    monkeypatch.setattr(approval, "is_approval_bypass_active", lambda: bypass["on"])
+    try:
+        _run(agent, "one")
+        bypass["on"] = True
+        _run(agent, "two")
+    finally:
+        agy_runtime.close_agy_session(agent)
+    first, second = fake_agy.records("argv")
+    assert "--dangerously-skip-permissions" not in first and "--dangerously-skip-permissions" in second
+    assert second[second.index("--conversation") + 1].startswith("conv-")
+    assert fake_agy.records("input")[1] == "two"  # resumed, so not re-seeded
+
+
+def test_interrupt_before_any_session_spawns_nothing(fake_agy, monkeypatch):
+    agent, _db = _agent(fake_agy, monkeypatch)
+    agent._interrupt_requested = True
+    result = _run(agent, "hello")
+    assert result["interrupted"] and not result["completed"]
+    assert fake_agy.records("argv") == []
+
+
+def test_usage_reaches_hermes_accounting(fake_agy, monkeypatch):
+    agent, _db = _agent(fake_agy, monkeypatch)
+    seen = []
+    monkeypatch.setattr(agy_runtime, "_record_codex_app_server_usage",
+                        lambda a, turn, messages=None: seen.append(turn.token_usage_last) or {"total_tokens": 6})
+    try:
+        result = _run(agent, "hello")
+    finally:
+        agy_runtime.close_agy_session(agent)
+    assert seen == [{"inputTokens": 5, "cachedInputTokens": 0, "outputTokens": 1, "reasoningOutputTokens": 0,
+                     "totalTokens": 0}]
+    assert result["total_tokens"] == 6

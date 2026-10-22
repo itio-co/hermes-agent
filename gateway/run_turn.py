@@ -1372,6 +1372,8 @@ class GatewayTurnMixin:
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
+            elif str(_hyg_runtime.get("api_mode") or "").lower() == "agy":
+                pass  # agy keeps its own context; a Hermes summary would only rotate the session away from it
             elif _hyg_runtime.get("api_key"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).

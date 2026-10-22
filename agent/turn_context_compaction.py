@@ -217,6 +217,9 @@ def _idle_compaction(
 def _codex_native_auto_compaction(agent: Any) -> bool:
     """Codex app-server threads are compacted by the codex agent itself; Hermes only
     initiates compaction in "hermes" mode."""
+    # agy (model.provider: agy) keeps its own conversation context and has no compaction to start.
+    if getattr(agent, "api_mode", None) == "agy":
+        return True
     return (
         # See #36801.
         getattr(agent, "api_mode", None) == "codex_app_server"
