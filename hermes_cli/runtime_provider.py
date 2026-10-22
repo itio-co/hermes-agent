@@ -93,7 +93,7 @@ _HOST_MANDATED_API_MODES = {
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
 # tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "agy"}
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -933,6 +933,9 @@ def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
 
 def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[dict[str, Any]]:
     """Providers decided on the REQUESTED name alone, before custom / pool / generic paths."""
+    if requested_provider == "agy":
+        # Antigravity CLI runs the whole turn with its own login (agent/agy_runtime.py); no credential here.
+        return _runtime("agy", "agy", "agy://local", "agy-cli", source="agy-cli", requested_provider=requested_provider)
     if requested_provider == "moa":
         return _runtime("moa", "chat_completions", "moa://local", "moa-virtual-provider", source="moa-virtual-provider",
                         requested_provider=requested_provider)

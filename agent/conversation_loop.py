@@ -1641,6 +1641,12 @@ def _run_conversation_turn(
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
         return codex_result
+    # model.provider: agy hands the whole turn to the Antigravity CLI (agent/agy_runtime.py).
+    if agent.api_mode == "agy":
+        return agent._run_agy_turn(
+            user_message=s.user_message, original_user_message=s.original_user_message, messages=s.messages,
+            effective_task_id=s.effective_task_id, should_review_memory=s._should_review_memory,
+        )
 
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":

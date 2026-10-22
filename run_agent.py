@@ -999,6 +999,11 @@ class AIAgent(
         if codex_session is not None:
             self._codex_session = None
             codex_session.close()
+        # The agy child (model.provider: agy) is the same kind of LLM-client subprocess.
+        agy_session = getattr(self, "_agy_session", None)
+        if agy_session is not None:
+            self._agy_session = None
+            agy_session.close()
 
     @staticmethod
     def _trim_process_memory() -> None:
