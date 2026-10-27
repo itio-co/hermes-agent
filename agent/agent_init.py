@@ -385,11 +385,20 @@ _EXPLICIT_API_MODES = {
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
-    from hermes_cli.providers import is_actual_route
+    from hermes_cli.providers import host_mandated_api_mode as _host_mandated_mode, is_actual_route
     from agent.transports import registered_api_modes
     host, url = agent._base_url_hostname, agent._base_url_lower
     if is_actual_route(agent.provider, base_url):
         agent.api_mode = "chat_completions"
+    elif api_mode == "chat_completions" and _host_mandated_mode(base_url) == "anthropic_messages":
+        # A persisted chat_completions (a resumed session's model_config, carried from a bare agent
+        # that resolved before its route) on an Anthropic Messages host is stale: on
+        # api.anthropic.com every turn would POST /chat/completions and 404. The host wins, as in
+        # model_switch; the healed mode is what the session persists next. Other mandated hosts
+        # (api.openai.com → Responses) keep an explicit chat_completions (#10473).
+        agent.api_mode = "anthropic_messages"
+        if provider_name is None and host == "api.anthropic.com":
+            agent.provider = "anthropic"
     elif api_mode in _EXPLICIT_API_MODES or (api_mode and api_mode in registered_api_modes()):
         # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
         # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
