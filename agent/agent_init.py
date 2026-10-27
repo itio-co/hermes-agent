@@ -758,6 +758,11 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
     effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    if _is_native_anthropic and not effective_key:
+        # No usable token (none configured, or the pool benched it for this model): fail here with
+        # the actionable reason instead of building a client whose every request dies opaquely.
+        from hermes_cli.runtime_provider import _anthropic_token_or_raise
+        _anthropic_token_or_raise(model=getattr(agent, "model", None))
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -995,6 +1000,17 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         if client_kwargs is None:  # init-time fallback bound the MoA facade
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+            return
+        # A bare agent (no provider / base_url at construction) resolved api_mode before the
+        # router chose the endpoint, so an Anthropic route lands on chat_completions and every
+        # turn 404s at api.anthropic.com/chat/completions. Rebind to the native wire now that the
+        # route is known; the token is re-resolved so a model benched by the pool still refuses.
+        if not agent.provider and base_url_host_matches(str(client_kwargs.get("base_url", "")), "api.anthropic.com"):
+            agent.provider = agent.requested_provider = "anthropic"
+            agent.api_mode = "anthropic_messages"
+            if hasattr(agent, "_transport_cache"):
+                agent._transport_cache.clear()
+            _init_anthropic_client(agent, None, str(client_kwargs["base_url"]), _provider_timeout)
             return
     from hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
